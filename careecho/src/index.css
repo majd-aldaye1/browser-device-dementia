@@ -60,23 +60,17 @@ button {
   font: inherit;
 }
 
-textarea {
-  resize: vertical;
-}
-
 button {
   cursor: pointer;
 }
 
-.checkbox-row {
+.button-row {
   display: flex;
-  align-items: center;
   gap: 10px;
 }
 
-.checkbox-row input {
-  width: auto;
-  margin: 0;
+.button-row button {
+  margin-top: 0;
 }
 
 .stack {
@@ -90,4 +84,19 @@ button {
   border-radius: 12px;
   padding: 14px;
   background: #fafafa;
+}
+
+.pending {
+  margin-top: 12px;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fef3c7;
+}
+
+.muted {
+  color: #4b5563;
+}
+
+.error-text {
+  color: #b91c1c;
 }

@@ -1,26 +1,20 @@
-//when the app starts, try to load saved cluster data
-//if none exists, use the default data
-//if saved data is broken, reset to the default data
-//when clusters change, save them back to the browser
+const STORAGE_KEY = "careecho_question_memory";
 
-const STORAGE_KEY = "careecho_clusters";
+export function loadMemory() {
+  const raw = localStorage.getItem(STORAGE_KEY);
 
-export function loadClusters(seedClusters) {
-    const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) {
+    return [];
+  }
 
-    if (!raw) {
-        loacalStorage.setItem(STORAGE_KEY, JSON.stringify(seedClusters));
-        return seedClusters;
-    }
-
-    try {
-        return JSON.parse(raw);
-    } catch {
-        localStorage.setItem(STORAGE_KEY, seedClusters);
-        return seedClusters;
-    }
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
-export function saveClusters(clusters) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(clusters));
+export function saveMemory(entries) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
 }
