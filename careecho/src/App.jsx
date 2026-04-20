@@ -54,6 +54,40 @@ export default function App() {
     ].slice(0, 40));
   }
 
+  function enqueueUtterance(rawTranscript) {
+    const text = rawTranscript.trim();
+    if (!text) {
+      return;
+    }
+
+    const now = Date.now();
+    const last = lastFinalTranscriptRef.current;
+    if (last.text === text && now - last.at < 1500) {
+      pushEvent("heard", `Skipped duplicate transcript: “${text}”`);
+      return;
+    }
+
+    lastFinalTranscriptRef.current = { text, at: now };
+    utteranceQueueRef.current.push(text);
+    void drainUtteranceQueue();
+  }
+
+  async function drainUtteranceQueue() {
+    if (processingQueueRef.current) {
+      return;
+    }
+    processingQueueRef.current = true;
+
+    try {
+      while (utteranceQueueRef.current.length > 0) {
+        const nextUtterance = utteranceQueueRef.current.shift();
+        await processUtterance(nextUtterance);
+      }
+    } finally {
+      processingQueueRef.current = false;
+    }
+  }
+
   function speak(text) {
     if (!window.speechSynthesis || !text) {
       return;
