@@ -37,6 +37,11 @@ export default function App() {
     return typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
   }, []);
 
+  function updatePendingQuestion(nextValue) {
+    pendingQuestionRef.current = nextValue;
+    setPendingQuestion(nextValue);
+  }
+
   function pushEvent(type, message) {
     setEvents((prev) => [
       {
@@ -112,7 +117,6 @@ export default function App() {
       setMemory((prev) => [entry, ...prev]);
       pushEvent("saved", `Saved pair: “${activePendingQuestion}” -> “${text}”`);
       speak("Got it. I will remember that answer for next time.");
-      setPendingQuestion(null);
       return;
     }
 
@@ -129,7 +133,7 @@ export default function App() {
       return;
     }
 
-    setPendingQuestion(text);
+    updatePendingQuestion(text);
     pushEvent("new", `New question captured: “${text}”. Waiting for caregiver answer...`);
     speak("I have not heard this question before. Caregiver, please answer now.");
   }
