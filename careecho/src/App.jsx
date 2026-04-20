@@ -19,9 +19,6 @@ export default function App() {
   const llmConfigRef = useRef(llmConfig);
   const isSpeakingRef = useRef(false);
   const ignoreUtterancesUntilRef = useRef(0);
-  const utteranceQueueRef = useRef([]);
-  const processingQueueRef = useRef(false);
-  const lastFinalTranscriptRef = useRef({ text: "", at: 0 });
 
   useEffect(() => {
     saveMemory(memory);
@@ -145,13 +142,6 @@ export default function App() {
 
     const activePendingQuestion = pendingQuestionRef.current;
     if (activePendingQuestion) {
-      const looksLikeQuestion = await decideIfQuestion(text);
-      if (looksLikeQuestion) {
-        pushEvent("heard", `Still waiting for caregiver answer; received another question: “${text}”`);
-        speak("I heard another question. Caregiver, please provide the answer to the previous question.");
-        return;
-      }
-
       const entry = {
         id: crypto.randomUUID(),
         question: activePendingQuestion,
@@ -160,7 +150,6 @@ export default function App() {
       };
       setMemory((prev) => [entry, ...prev]);
       pushEvent("saved", `Saved pair: “${activePendingQuestion}” -> “${text}”`);
-      updatePendingQuestion(null);
       speak("Got it. I will remember that answer for next time.");
       return;
     }
@@ -214,7 +203,7 @@ export default function App() {
             pushEvent("heard", `Ignored likely self-spoken audio: “${transcript.trim()}”`);
             continue;
           }
-          enqueueUtterance(transcript);
+          void processUtterance(transcript);
         } else {
           interim += transcript;
         }
@@ -253,10 +242,6 @@ export default function App() {
     }
     isSpeakingRef.current = false;
     ignoreUtterancesUntilRef.current = 0;
-    utteranceQueueRef.current = [];
-    processingQueueRef.current = false;
-    lastFinalTranscriptRef.current = { text: "", at: 0 };
-    updatePendingQuestion(null);
     setListening(false);
     setPartialTranscript("");
     pushEvent("status", "Listening stopped.");
