@@ -14,14 +14,37 @@ export default function App() {
   const [pendingQuestion, setPendingQuestion] = useState(null);
   const [llmConfig, setLlmConfig] = useState({ apiKey: "", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions" });
   const recognitionRef = useRef(null);
+  const memoryRef = useRef(memory);
+  const pendingQuestionRef = useRef(pendingQuestion);
+  const llmConfigRef = useRef(llmConfig);
+  const isSpeakingRef = useRef(false);
+  const ignoreUtterancesUntilRef = useRef(0);
+  const utteranceQueueRef = useRef([]);
+  const processingQueueRef = useRef(false);
+  const lastFinalTranscriptRef = useRef({ text: "", at: 0 });
+  const postSaveCooldownUntilRef = useRef(0);
 
   useEffect(() => {
     saveMemory(memory);
   }, [memory]);
+  useEffect(() => {
+    memoryRef.current = memory;
+  }, [memory]);
+  useEffect(() => {
+    pendingQuestionRef.current = pendingQuestion;
+  }, [pendingQuestion]);
+  useEffect(() => {
+    llmConfigRef.current = llmConfig;
+  }, [llmConfig]);
 
   const supportsSpeechRecognition = useMemo(() => {
     return typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
   }, []);
+
+  function updatePendingQuestion(nextValue) {
+    pendingQuestionRef.current = nextValue;
+    setPendingQuestion(nextValue);
+  }
 
   function pushEvent(type, message) {
     setEvents((prev) => [
@@ -35,14 +58,59 @@ export default function App() {
     ].slice(0, 40));
   }
 
+  function enqueueUtterance(rawTranscript) {
+    const text = rawTranscript.trim();
+    if (!text) {
+      return;
+    }
+
+    const now = Date.now();
+    const last = lastFinalTranscriptRef.current;
+    if (last.text === text && now - last.at < 1500) {
+      pushEvent("heard", `Skipped duplicate transcript: “${text}”`);
+      return;
+    }
+
+    lastFinalTranscriptRef.current = { text, at: now };
+    utteranceQueueRef.current.push(text);
+    void drainUtteranceQueue();
+  }
+
+  async function drainUtteranceQueue() {
+    if (processingQueueRef.current) {
+      return;
+    }
+    processingQueueRef.current = true;
+
+    try {
+      while (utteranceQueueRef.current.length > 0) {
+        const nextUtterance = utteranceQueueRef.current.shift();
+        await processUtterance(nextUtterance);
+      }
+    } finally {
+      processingQueueRef.current = false;
+    }
+  }
+
   function speak(text) {
     if (!window.speechSynthesis || !text) {
       return;
     }
 
+    const now = Date.now();
+    const ignoreMs = Math.min(6000, 1200 + text.length * 40);
+    ignoreUtterancesUntilRef.current = now + ignoreMs;
+
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.95;
     utterance.pitch = 1;
+    utterance.onstart = () => {
+      isSpeakingRef.current = true;
+    };
+    utterance.onend = () => {
+      isSpeakingRef.current = false;
+      ignoreUtterancesUntilRef.current = Date.now() + 500;
+    };
     window.speechSynthesis.speak(utterance);
   }
 
@@ -53,12 +121,13 @@ export default function App() {
     }
 
     const localHeuristic = lowered.includes("?") || QUESTION_HINTS.some((hint) => lowered.startsWith(`${hint} `));
-    if (!llmConfig.apiKey) {
+    const activeLlmConfig = llmConfigRef.current;
+    if (!activeLlmConfig.apiKey) {
       return localHeuristic;
     }
 
     try {
-      const result = await shouldTreatAsQuestion(text, llmConfig);
+      const result = await shouldTreatAsQuestion(text, activeLlmConfig);
       if (result.isQuestion === null) {
         return localHeuristic;
       }
@@ -75,17 +144,36 @@ export default function App() {
       return;
     }
 
-    if (pendingQuestion) {
+    const activePendingQuestion = pendingQuestionRef.current;
+    if (activePendingQuestion) {
+      // Exit "waiting for answer" mode immediately so any follow-up transcripts
+      // in this same recognition burst cannot be treated as additional answers.
+      updatePendingQuestion(null);
+
+      const looksLikeQuestion = await decideIfQuestion(text);
+      if (looksLikeQuestion) {
+        updatePendingQuestion(activePendingQuestion);
+        pushEvent("heard", `Still waiting for caregiver answer; received another question: “${text}”`);
+        speak("I heard another question. Caregiver, please provide the answer to the previous question.");
+        return;
+      }
+
       const entry = {
         id: crypto.randomUUID(),
-        question: pendingQuestion,
+        question: activePendingQuestion,
         answer: text,
         createdAt: new Date().toISOString(),
       };
-      setMemory((prev) => [entry, ...prev]);
-      pushEvent("saved", `Saved pair: “${pendingQuestion}” -> “${text}”`);
+      setMemory((prev) => {
+        const nextMemory = [entry, ...prev];
+        memoryRef.current = nextMemory;
+        return nextMemory;
+      });
+      pushEvent("saved", `Saved pair: “${activePendingQuestion}” -> “${text}”`);
+      utteranceQueueRef.current = [];
+      lastFinalTranscriptRef.current = { text: "", at: 0 };
+      postSaveCooldownUntilRef.current = Date.now() + 4000;
       speak("Got it. I will remember that answer for next time.");
-      setPendingQuestion(null);
       return;
     }
 
@@ -95,19 +183,23 @@ export default function App() {
       return;
     }
 
-    const match = findQuestionMatch(text, memory);
+    const match = findQuestionMatch(text, memoryRef.current);
     if (match) {
       pushEvent("match", `Repeated question matched (${match.strategy}, ${match.score.toFixed(2)}): “${match.entry.question}”`);
       speak(match.entry.answer);
       return;
     }
 
-    setPendingQuestion(text);
+    updatePendingQuestion(text);
     pushEvent("new", `New question captured: “${text}”. Waiting for caregiver answer...`);
     speak("I have not heard this question before. Caregiver, please answer now.");
   }
 
   function startListening() {
+    if (recognitionRef.current) {
+      return;
+    }
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       pushEvent("error", "Speech recognition is not supported in this browser.");
@@ -130,7 +222,15 @@ export default function App() {
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          void processUtterance(transcript);
+          if (Date.now() < postSaveCooldownUntilRef.current) {
+            pushEvent("heard", `Ignored audio during post-save cooldown: “${transcript.trim()}”`);
+            continue;
+          }
+          if (isSpeakingRef.current || Date.now() < ignoreUtterancesUntilRef.current) {
+            pushEvent("heard", `Ignored likely self-spoken audio: “${transcript.trim()}”`);
+            continue;
+          }
+          enqueueUtterance(transcript);
         } else {
           interim += transcript;
         }
@@ -164,6 +264,16 @@ export default function App() {
       recognition.stop();
     }
 
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    isSpeakingRef.current = false;
+    ignoreUtterancesUntilRef.current = 0;
+    utteranceQueueRef.current = [];
+    processingQueueRef.current = false;
+    lastFinalTranscriptRef.current = { text: "", at: 0 };
+    postSaveCooldownUntilRef.current = 0;
+    updatePendingQuestion(null);
     setListening(false);
     setPartialTranscript("");
     pushEvent("status", "Listening stopped.");
