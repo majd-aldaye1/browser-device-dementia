@@ -108,13 +108,6 @@ export default function App() {
 
     const activePendingQuestion = pendingQuestionRef.current;
     if (activePendingQuestion) {
-      const looksLikeQuestion = await decideIfQuestion(text);
-      if (looksLikeQuestion) {
-        pushEvent("heard", `Still waiting for caregiver answer; received another question: “${text}”`);
-        speak("I heard another question. Caregiver, please provide the answer to the previous question.");
-        return;
-      }
-
       const entry = {
         id: crypto.randomUUID(),
         question: activePendingQuestion,
@@ -123,7 +116,6 @@ export default function App() {
       };
       setMemory((prev) => [entry, ...prev]);
       pushEvent("saved", `Saved pair: “${activePendingQuestion}” -> “${text}”`);
-      updatePendingQuestion(null);
       speak("Got it. I will remember that answer for next time.");
       return;
     }
@@ -216,7 +208,6 @@ export default function App() {
     }
     isSpeakingRef.current = false;
     ignoreUtterancesUntilRef.current = 0;
-    updatePendingQuestion(null);
     setListening(false);
     setPartialTranscript("");
     pushEvent("status", "Listening stopped.");
