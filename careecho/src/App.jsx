@@ -14,10 +14,24 @@ export default function App() {
   const [pendingQuestion, setPendingQuestion] = useState(null);
   const [llmConfig, setLlmConfig] = useState({ apiKey: "", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions" });
   const recognitionRef = useRef(null);
+  const memoryRef = useRef(memory);
+  const pendingQuestionRef = useRef(pendingQuestion);
+  const llmConfigRef = useRef(llmConfig);
+  const isSpeakingRef = useRef(false);
+  const ignoreUtterancesUntilRef = useRef(0);
 
   useEffect(() => {
     saveMemory(memory);
   }, [memory]);
+  useEffect(() => {
+    memoryRef.current = memory;
+  }, [memory]);
+  useEffect(() => {
+    pendingQuestionRef.current = pendingQuestion;
+  }, [pendingQuestion]);
+  useEffect(() => {
+    llmConfigRef.current = llmConfig;
+  }, [llmConfig]);
 
   const supportsSpeechRecognition = useMemo(() => {
     return typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -40,9 +54,20 @@ export default function App() {
       return;
     }
 
+    const now = Date.now();
+    const ignoreMs = Math.min(6000, 1200 + text.length * 40);
+    ignoreUtterancesUntilRef.current = now + ignoreMs;
+
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.95;
     utterance.pitch = 1;
+    utterance.onstart = () => {
+      isSpeakingRef.current = true;
+    };
+    utterance.onend = () => {
+      isSpeakingRef.current = false;
+      ignoreUtterancesUntilRef.current = Date.now() + 500;
+    };
     window.speechSynthesis.speak(utterance);
   }
 
@@ -53,12 +78,13 @@ export default function App() {
     }
 
     const localHeuristic = lowered.includes("?") || QUESTION_HINTS.some((hint) => lowered.startsWith(`${hint} `));
-    if (!llmConfig.apiKey) {
+    const activeLlmConfig = llmConfigRef.current;
+    if (!activeLlmConfig.apiKey) {
       return localHeuristic;
     }
 
     try {
-      const result = await shouldTreatAsQuestion(text, llmConfig);
+      const result = await shouldTreatAsQuestion(text, activeLlmConfig);
       if (result.isQuestion === null) {
         return localHeuristic;
       }
@@ -75,15 +101,16 @@ export default function App() {
       return;
     }
 
-    if (pendingQuestion) {
+    const activePendingQuestion = pendingQuestionRef.current;
+    if (activePendingQuestion) {
       const entry = {
         id: crypto.randomUUID(),
-        question: pendingQuestion,
+        question: activePendingQuestion,
         answer: text,
         createdAt: new Date().toISOString(),
       };
       setMemory((prev) => [entry, ...prev]);
-      pushEvent("saved", `Saved pair: “${pendingQuestion}” -> “${text}”`);
+      pushEvent("saved", `Saved pair: “${activePendingQuestion}” -> “${text}”`);
       speak("Got it. I will remember that answer for next time.");
       setPendingQuestion(null);
       return;
@@ -95,7 +122,7 @@ export default function App() {
       return;
     }
 
-    const match = findQuestionMatch(text, memory);
+    const match = findQuestionMatch(text, memoryRef.current);
     if (match) {
       pushEvent("match", `Repeated question matched (${match.strategy}, ${match.score.toFixed(2)}): “${match.entry.question}”`);
       speak(match.entry.answer);
@@ -108,6 +135,10 @@ export default function App() {
   }
 
   function startListening() {
+    if (recognitionRef.current) {
+      return;
+    }
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       pushEvent("error", "Speech recognition is not supported in this browser.");
@@ -130,6 +161,10 @@ export default function App() {
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
+          if (isSpeakingRef.current || Date.now() < ignoreUtterancesUntilRef.current) {
+            pushEvent("heard", `Ignored likely self-spoken audio: “${transcript.trim()}”`);
+            continue;
+          }
           void processUtterance(transcript);
         } else {
           interim += transcript;
@@ -164,6 +199,11 @@ export default function App() {
       recognition.stop();
     }
 
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    isSpeakingRef.current = false;
+    ignoreUtterancesUntilRef.current = 0;
     setListening(false);
     setPartialTranscript("");
     pushEvent("status", "Listening stopped.");
