@@ -5,6 +5,7 @@ import { shouldTreatAsQuestion } from "./utils/llm";
 import "./index.css";
 
 const QUESTION_HINTS = ["who", "what", "when", "where", "why", "how", "can", "could", "should", "are", "is", "do", "did", "will"];
+const ANSWER_CAPTURE_WINDOW_MS = 45_000;
 
 export default function App() {
   const [memory, setMemory] = useState(() => loadMemory());
@@ -154,11 +155,13 @@ export default function App() {
       return;
     }
 
-    const isQuestion = await decideIfQuestion(text);
-    if (!isQuestion) {
+    if (activePendingQuestion && questionAgeMs > ANSWER_CAPTURE_WINDOW_MS) {
+      pushEvent("heard", `Pending question expired without a clear answer: “${activePendingQuestion}”`);
+      updatePendingQuestion(null);
+    } else {
       pushEvent("heard", `Ignored non-question utterance: “${text}”`);
-      return;
     }
+  }
 
     const match = findQuestionMatch(text, memoryRef.current);
     if (match) {
@@ -273,7 +276,7 @@ export default function App() {
           </div>
 
           {pendingQuestion && (
-            <p className="pending">Waiting for caregiver answer to: “{pendingQuestion}”</p>
+            <p className="pending">Latest unresolved question from conversation: “{pendingQuestion}”</p>
           )}
 
           {partialTranscript && (
