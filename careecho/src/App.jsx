@@ -21,16 +21,24 @@ export default function App() {
 
   const recognitionRef = useRef(null);
   const memoryRef = useRef(memory);
+  const pendingQuestionRef = useRef(pendingQuestion);
   const llmConfigRef = useRef(llmConfig);
-  const pendingRef = useRef({ question: null, capturedAt: 0 });
   const isSpeakingRef = useRef(false);
   const ignoreUtterancesUntilRef = useRef(0);
-  const processingChainRef = useRef(Promise.resolve());
 
   useEffect(() => {
     saveMemory(memory);
     memoryRef.current = memory;
   }, [memory]);
+  useEffect(() => {
+    memoryRef.current = memory;
+  }, [memory]);
+  useEffect(() => {
+    pendingQuestionRef.current = pendingQuestion;
+  }, [pendingQuestion]);
+  useEffect(() => {
+    llmConfigRef.current = llmConfig;
+  }, [llmConfig]);
 
   useEffect(() => {
     llmConfigRef.current = llmConfig;
@@ -40,6 +48,11 @@ export default function App() {
     return typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
   }, []);
 
+  function updatePendingQuestion(nextValue) {
+    pendingQuestionRef.current = nextValue;
+    setPendingQuestion(nextValue);
+  }
+
   function pushEvent(type, message) {
     setEvents((prev) => [
       { id: crypto.randomUUID(), type, message, at: new Date().toLocaleTimeString() },
@@ -47,11 +60,38 @@ export default function App() {
     ].slice(0, 40));
   }
 
-  function setPending(question) {
-    pendingRef.current = question
-      ? { question, capturedAt: Date.now() }
-      : { question: null, capturedAt: 0 };
-    setPendingQuestion(question);
+  function enqueueUtterance(rawTranscript) {
+    const text = rawTranscript.trim();
+    if (!text) {
+      return;
+    }
+
+    const now = Date.now();
+    const last = lastFinalTranscriptRef.current;
+    if (last.text === text && now - last.at < 1500) {
+      pushEvent("heard", `Skipped duplicate transcript: “${text}”`);
+      return;
+    }
+
+    lastFinalTranscriptRef.current = { text, at: now };
+    utteranceQueueRef.current.push(text);
+    void drainUtteranceQueue();
+  }
+
+  async function drainUtteranceQueue() {
+    if (processingQueueRef.current) {
+      return;
+    }
+    processingQueueRef.current = true;
+
+    try {
+      while (utteranceQueueRef.current.length > 0) {
+        const nextUtterance = utteranceQueueRef.current.shift();
+        await processUtterance(nextUtterance);
+      }
+    } finally {
+      processingQueueRef.current = false;
+    }
   }
 
   function speak(text) {
@@ -59,7 +99,10 @@ export default function App() {
       return;
     }
 
-    ignoreUtterancesUntilRef.current = Date.now() + Math.min(6000, 1200 + text.length * 40);
+    const now = Date.now();
+    const ignoreMs = Math.min(6000, 1200 + text.length * 40);
+    ignoreUtterancesUntilRef.current = now + ignoreMs;
+
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.95;
     utterance.pitch = 1;
@@ -87,7 +130,10 @@ export default function App() {
 
     try {
       const result = await shouldTreatAsQuestion(text, activeLlmConfig);
-      return result.isQuestion === null ? localHeuristic : result.isQuestion;
+      if (result.isQuestion === null) {
+        return localHeuristic;
+      }
+      return result.isQuestion;
     } catch {
       pushEvent("warn", "LLM question check failed, falling back to local heuristic.");
       return localHeuristic;
@@ -100,47 +146,38 @@ export default function App() {
       return;
     }
 
-    const isQuestion = await decideIfQuestion(text);
-    if (isQuestion) {
-      const match = findQuestionMatch(text, memoryRef.current);
-      if (match) {
-        pushEvent("match", `Repeated question matched (${match.strategy}, ${match.score.toFixed(2)}): “${match.entry.question}”`);
-        speak(match.entry.answer);
-        return;
-      }
-
-      setPending(text);
-      pushEvent("new", `Captured new question from conversation: “${text}”`);
-      return;
-    }
-
-    const pending = pendingRef.current;
-    if (pending.question && Date.now() - pending.capturedAt <= ANSWER_CAPTURE_WINDOW_MS) {
+    const activePendingQuestion = pendingQuestionRef.current;
+    if (activePendingQuestion) {
       const entry = {
         id: crypto.randomUUID(),
-        question: pending.question,
+        question: activePendingQuestion,
         answer: text,
         createdAt: new Date().toISOString(),
       };
       setMemory((prev) => [entry, ...prev]);
-      setPending(null);
-      pushEvent("saved", `Inferred answer from conversation: “${entry.question}” -> “${entry.answer}”`);
+      pushEvent("saved", `Saved pair: “${activePendingQuestion}” -> “${text}”`);
+      speak("Got it. I will remember that answer for next time.");
       return;
     }
 
-    if (pending.question) {
-      pushEvent("heard", `Pending question expired without clear answer: “${pending.question}”`);
-      setPending(null);
-      return;
+    if (activePendingQuestion && questionAgeMs > ANSWER_CAPTURE_WINDOW_MS) {
+      pushEvent("heard", `Pending question expired without a clear answer: “${activePendingQuestion}”`);
+      updatePendingQuestion(null);
+    } else {
+      pushEvent("heard", `Ignored non-question utterance: “${text}”`);
     }
-
-    pushEvent("heard", `Ignored non-question utterance: “${text}”`);
   }
 
-  function queueUtterance(rawText) {
-    processingChainRef.current = processingChainRef.current
-      .then(() => processUtterance(rawText))
-      .catch(() => {});
+    const match = findQuestionMatch(text, memoryRef.current);
+    if (match) {
+      pushEvent("match", `Repeated question matched (${match.strategy}, ${match.score.toFixed(2)}): “${match.entry.question}”`);
+      speak(match.entry.answer);
+      return;
+    }
+
+    updatePendingQuestion(text);
+    pushEvent("new", `New question captured: “${text}”. Waiting for caregiver answer...`);
+    speak("I have not heard this question before. Caregiver, please answer now.");
   }
 
   function startListening() {
@@ -173,7 +210,7 @@ export default function App() {
             pushEvent("heard", `Ignored likely self-spoken audio: “${transcript.trim()}”`);
             continue;
           }
-          queueUtterance(transcript);
+          void processUtterance(transcript);
         } else {
           interim += transcript;
         }
@@ -205,13 +242,12 @@ export default function App() {
       recognition.onend = null;
       recognition.stop();
     }
+
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
     isSpeakingRef.current = false;
     ignoreUtterancesUntilRef.current = 0;
-    processingChainRef.current = Promise.resolve();
-    setPending(null);
     setListening(false);
     setPartialTranscript("");
     pushEvent("status", "Listening stopped.");
