@@ -5,6 +5,7 @@ import { shouldTreatAsQuestion } from "./utils/llm";
 import "./index.css";
 
 const QUESTION_HINTS = ["who", "what", "when", "where", "why", "how", "can", "could", "should", "are", "is", "do", "did", "will"];
+const ANSWER_CAPTURE_WINDOW_MS = 45_000;
 
 export default function App() {
   const [memory, setMemory] = useState(() => loadMemory());
@@ -14,14 +15,39 @@ export default function App() {
   const [pendingQuestion, setPendingQuestion] = useState(null);
   const [llmConfig, setLlmConfig] = useState({ apiKey: "", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions" });
   const recognitionRef = useRef(null);
+  const memoryRef = useRef(memory);
+  const pendingQuestionRef = useRef(pendingQuestion);
+  const llmConfigRef = useRef(llmConfig);
+  const isSpeakingRef = useRef(false);
+  const ignoreUtterancesUntilRef = useRef(0);
+  const utteranceQueueRef = useRef([]);
+  const processingQueueRef = useRef(false);
+  const lastFinalTranscriptRef = useRef({ text: "", at: 0 });
+  const postSaveCooldownUntilRef = useRef(0);
+  const pendingQuestionCapturedAtRef = useRef(0);
 
   useEffect(() => {
     saveMemory(memory);
   }, [memory]);
+  useEffect(() => {
+    memoryRef.current = memory;
+  }, [memory]);
+  useEffect(() => {
+    pendingQuestionRef.current = pendingQuestion;
+  }, [pendingQuestion]);
+  useEffect(() => {
+    llmConfigRef.current = llmConfig;
+  }, [llmConfig]);
 
   const supportsSpeechRecognition = useMemo(() => {
     return typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
   }, []);
+
+  function updatePendingQuestion(nextValue) {
+    pendingQuestionRef.current = nextValue;
+    pendingQuestionCapturedAtRef.current = nextValue ? Date.now() : 0;
+    setPendingQuestion(nextValue);
+  }
 
   function pushEvent(type, message) {
     setEvents((prev) => [
@@ -35,14 +61,59 @@ export default function App() {
     ].slice(0, 40));
   }
 
+  function enqueueUtterance(rawTranscript) {
+    const text = rawTranscript.trim();
+    if (!text) {
+      return;
+    }
+
+    const now = Date.now();
+    const last = lastFinalTranscriptRef.current;
+    if (last.text === text && now - last.at < 1500) {
+      pushEvent("heard", `Skipped duplicate transcript: “${text}”`);
+      return;
+    }
+
+    lastFinalTranscriptRef.current = { text, at: now };
+    utteranceQueueRef.current.push(text);
+    void drainUtteranceQueue();
+  }
+
+  async function drainUtteranceQueue() {
+    if (processingQueueRef.current) {
+      return;
+    }
+    processingQueueRef.current = true;
+
+    try {
+      while (utteranceQueueRef.current.length > 0) {
+        const nextUtterance = utteranceQueueRef.current.shift();
+        await processUtterance(nextUtterance);
+      }
+    } finally {
+      processingQueueRef.current = false;
+    }
+  }
+
   function speak(text) {
     if (!window.speechSynthesis || !text) {
       return;
     }
 
+    const now = Date.now();
+    const ignoreMs = Math.min(6000, 1200 + text.length * 40);
+    ignoreUtterancesUntilRef.current = now + ignoreMs;
+
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.95;
     utterance.pitch = 1;
+    utterance.onstart = () => {
+      isSpeakingRef.current = true;
+    };
+    utterance.onend = () => {
+      isSpeakingRef.current = false;
+      ignoreUtterancesUntilRef.current = Date.now() + 500;
+    };
     window.speechSynthesis.speak(utterance);
   }
 
@@ -53,12 +124,13 @@ export default function App() {
     }
 
     const localHeuristic = lowered.includes("?") || QUESTION_HINTS.some((hint) => lowered.startsWith(`${hint} `));
-    if (!llmConfig.apiKey) {
+    const activeLlmConfig = llmConfigRef.current;
+    if (!activeLlmConfig.apiKey) {
       return localHeuristic;
     }
 
     try {
-      const result = await shouldTreatAsQuestion(text, llmConfig);
+      const result = await shouldTreatAsQuestion(text, activeLlmConfig);
       if (result.isQuestion === null) {
         return localHeuristic;
       }
@@ -75,39 +147,54 @@ export default function App() {
       return;
     }
 
-    if (pendingQuestion) {
+    const isQuestion = await decideIfQuestion(text);
+    if (isQuestion) {
+      const match = findQuestionMatch(text, memoryRef.current);
+      if (match) {
+        pushEvent("match", `Repeated question matched (${match.strategy}, ${match.score.toFixed(2)}): “${match.entry.question}”`);
+        speak(match.entry.answer);
+        return;
+      }
+
+      updatePendingQuestion(text);
+      pushEvent("new", `Captured new question from conversation: “${text}”. Listening for a natural follow-up answer...`);
+      return;
+    }
+
+    const activePendingQuestion = pendingQuestionRef.current;
+    const questionAgeMs = Date.now() - pendingQuestionCapturedAtRef.current;
+    if (activePendingQuestion && questionAgeMs <= ANSWER_CAPTURE_WINDOW_MS) {
       const entry = {
         id: crypto.randomUUID(),
-        question: pendingQuestion,
+        question: activePendingQuestion,
         answer: text,
         createdAt: new Date().toISOString(),
       };
-      setMemory((prev) => [entry, ...prev]);
-      pushEvent("saved", `Saved pair: “${pendingQuestion}” -> “${text}”`);
-      speak("Got it. I will remember that answer for next time.");
-      setPendingQuestion(null);
+      setMemory((prev) => {
+        const nextMemory = [entry, ...prev];
+        memoryRef.current = nextMemory;
+        return nextMemory;
+      });
+      pushEvent("saved", `Inferred answer from conversation: “${activePendingQuestion}” -> “${text}”`);
+      updatePendingQuestion(null);
+      utteranceQueueRef.current = [];
+      lastFinalTranscriptRef.current = { text: "", at: 0 };
       return;
     }
 
-    const isQuestion = await decideIfQuestion(text);
-    if (!isQuestion) {
+    if (activePendingQuestion && questionAgeMs > ANSWER_CAPTURE_WINDOW_MS) {
+      pushEvent("heard", `Pending question expired without a clear answer: “${activePendingQuestion}”`);
+      updatePendingQuestion(null);
+    } else {
       pushEvent("heard", `Ignored non-question utterance: “${text}”`);
-      return;
     }
-
-    const match = findQuestionMatch(text, memory);
-    if (match) {
-      pushEvent("match", `Repeated question matched (${match.strategy}, ${match.score.toFixed(2)}): “${match.entry.question}”`);
-      speak(match.entry.answer);
-      return;
-    }
-
-    setPendingQuestion(text);
-    pushEvent("new", `New question captured: “${text}”. Waiting for caregiver answer...`);
-    speak("I have not heard this question before. Caregiver, please answer now.");
   }
 
   function startListening() {
+    if (recognitionRef.current) {
+      return;
+    }
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       pushEvent("error", "Speech recognition is not supported in this browser.");
@@ -130,7 +217,15 @@ export default function App() {
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          void processUtterance(transcript);
+          if (Date.now() < postSaveCooldownUntilRef.current) {
+            pushEvent("heard", `Ignored audio during post-save cooldown: “${transcript.trim()}”`);
+            continue;
+          }
+          if (isSpeakingRef.current || Date.now() < ignoreUtterancesUntilRef.current) {
+            pushEvent("heard", `Ignored likely self-spoken audio: “${transcript.trim()}”`);
+            continue;
+          }
+          enqueueUtterance(transcript);
         } else {
           interim += transcript;
         }
@@ -164,6 +259,16 @@ export default function App() {
       recognition.stop();
     }
 
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    isSpeakingRef.current = false;
+    ignoreUtterancesUntilRef.current = 0;
+    utteranceQueueRef.current = [];
+    processingQueueRef.current = false;
+    lastFinalTranscriptRef.current = { text: "", at: 0 };
+    postSaveCooldownUntilRef.current = 0;
+    updatePendingQuestion(null);
     setListening(false);
     setPartialTranscript("");
     pushEvent("status", "Listening stopped.");
@@ -195,7 +300,7 @@ export default function App() {
           </div>
 
           {pendingQuestion && (
-            <p className="pending">Waiting for caregiver answer to: “{pendingQuestion}”</p>
+            <p className="pending">Latest unresolved question from conversation: “{pendingQuestion}”</p>
           )}
 
           {partialTranscript && (
