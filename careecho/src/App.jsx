@@ -20,11 +20,6 @@ export default function App() {
   const llmConfigRef = useRef(llmConfig);
   const isSpeakingRef = useRef(false);
   const ignoreUtterancesUntilRef = useRef(0);
-  const utteranceQueueRef = useRef([]);
-  const processingQueueRef = useRef(false);
-  const lastFinalTranscriptRef = useRef({ text: "", at: 0 });
-  const postSaveCooldownUntilRef = useRef(0);
-  const pendingQuestionCapturedAtRef = useRef(0);
 
   useEffect(() => {
     saveMemory(memory);
@@ -45,7 +40,6 @@ export default function App() {
 
   function updatePendingQuestion(nextValue) {
     pendingQuestionRef.current = nextValue;
-    pendingQuestionCapturedAtRef.current = nextValue ? Date.now() : 0;
     setPendingQuestion(nextValue);
   }
 
@@ -147,38 +141,17 @@ export default function App() {
       return;
     }
 
-    const isQuestion = await decideIfQuestion(text);
-    if (isQuestion) {
-      const match = findQuestionMatch(text, memoryRef.current);
-      if (match) {
-        pushEvent("match", `Repeated question matched (${match.strategy}, ${match.score.toFixed(2)}): “${match.entry.question}”`);
-        speak(match.entry.answer);
-        return;
-      }
-
-      updatePendingQuestion(text);
-      pushEvent("new", `Captured new question from conversation: “${text}”. Listening for a natural follow-up answer...`);
-      return;
-    }
-
     const activePendingQuestion = pendingQuestionRef.current;
-    const questionAgeMs = Date.now() - pendingQuestionCapturedAtRef.current;
-    if (activePendingQuestion && questionAgeMs <= ANSWER_CAPTURE_WINDOW_MS) {
+    if (activePendingQuestion) {
       const entry = {
         id: crypto.randomUUID(),
         question: activePendingQuestion,
         answer: text,
         createdAt: new Date().toISOString(),
       };
-      setMemory((prev) => {
-        const nextMemory = [entry, ...prev];
-        memoryRef.current = nextMemory;
-        return nextMemory;
-      });
-      pushEvent("saved", `Inferred answer from conversation: “${activePendingQuestion}” -> “${text}”`);
-      updatePendingQuestion(null);
-      utteranceQueueRef.current = [];
-      lastFinalTranscriptRef.current = { text: "", at: 0 };
+      setMemory((prev) => [entry, ...prev]);
+      pushEvent("saved", `Saved pair: “${activePendingQuestion}” -> “${text}”`);
+      speak("Got it. I will remember that answer for next time.");
       return;
     }
 
@@ -188,6 +161,18 @@ export default function App() {
     } else {
       pushEvent("heard", `Ignored non-question utterance: “${text}”`);
     }
+  }
+
+    const match = findQuestionMatch(text, memoryRef.current);
+    if (match) {
+      pushEvent("match", `Repeated question matched (${match.strategy}, ${match.score.toFixed(2)}): “${match.entry.question}”`);
+      speak(match.entry.answer);
+      return;
+    }
+
+    updatePendingQuestion(text);
+    pushEvent("new", `New question captured: “${text}”. Waiting for caregiver answer...`);
+    speak("I have not heard this question before. Caregiver, please answer now.");
   }
 
   function startListening() {
@@ -217,15 +202,11 @@ export default function App() {
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          if (Date.now() < postSaveCooldownUntilRef.current) {
-            pushEvent("heard", `Ignored audio during post-save cooldown: “${transcript.trim()}”`);
-            continue;
-          }
           if (isSpeakingRef.current || Date.now() < ignoreUtterancesUntilRef.current) {
             pushEvent("heard", `Ignored likely self-spoken audio: “${transcript.trim()}”`);
             continue;
           }
-          enqueueUtterance(transcript);
+          void processUtterance(transcript);
         } else {
           interim += transcript;
         }
@@ -264,11 +245,6 @@ export default function App() {
     }
     isSpeakingRef.current = false;
     ignoreUtterancesUntilRef.current = 0;
-    utteranceQueueRef.current = [];
-    processingQueueRef.current = false;
-    lastFinalTranscriptRef.current = { text: "", at: 0 };
-    postSaveCooldownUntilRef.current = 0;
-    updatePendingQuestion(null);
     setListening(false);
     setPartialTranscript("");
     pushEvent("status", "Listening stopped.");
