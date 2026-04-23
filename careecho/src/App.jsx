@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { findQuestionMatch } from "./utils/matcher";
-import { loadMemory, saveMemory } from "./utils/storage";
 import { shouldTreatAsQuestion } from "./utils/llm";
+import { loadMemory, saveMemory } from "./utils/storage";
 import "./index.css";
 
 const QUESTION_HINTS = ["who", "what", "when", "where", "why", "how", "can", "could", "should", "are", "is", "do", "did", "will"];
@@ -13,7 +13,12 @@ export default function App() {
   const [partialTranscript, setPartialTranscript] = useState("");
   const [events, setEvents] = useState([]);
   const [pendingQuestion, setPendingQuestion] = useState(null);
-  const [llmConfig, setLlmConfig] = useState({ apiKey: "", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions" });
+  const [llmConfig, setLlmConfig] = useState({
+    apiKey: "",
+    model: "gpt-4o-mini",
+    endpoint: "https://api.openai.com/v1/chat/completions",
+  });
+
   const recognitionRef = useRef(null);
   const memoryRef = useRef(memory);
   const pendingQuestionRef = useRef(pendingQuestion);
@@ -23,6 +28,7 @@ export default function App() {
 
   useEffect(() => {
     saveMemory(memory);
+    memoryRef.current = memory;
   }, [memory]);
   useEffect(() => {
     memoryRef.current = memory;
@@ -30,6 +36,10 @@ export default function App() {
   useEffect(() => {
     pendingQuestionRef.current = pendingQuestion;
   }, [pendingQuestion]);
+  useEffect(() => {
+    llmConfigRef.current = llmConfig;
+  }, [llmConfig]);
+
   useEffect(() => {
     llmConfigRef.current = llmConfig;
   }, [llmConfig]);
@@ -45,12 +55,7 @@ export default function App() {
 
   function pushEvent(type, message) {
     setEvents((prev) => [
-      {
-        id: crypto.randomUUID(),
-        type,
-        message,
-        at: new Date().toLocaleTimeString(),
-      },
+      { id: crypto.randomUUID(), type, message, at: new Date().toLocaleTimeString() },
       ...prev,
     ].slice(0, 40));
   }
@@ -198,7 +203,6 @@ export default function App() {
 
     recognition.onresult = (event) => {
       let interim = "";
-
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
@@ -211,7 +215,6 @@ export default function App() {
           interim += transcript;
         }
       }
-
       setPartialTranscript(interim);
     };
 
@@ -250,9 +253,7 @@ export default function App() {
     pushEvent("status", "Listening stopped.");
   }, []);
 
-  useEffect(() => {
-    return () => stopListening();
-  }, [stopListening]);
+  useEffect(() => () => stopListening(), [stopListening]);
 
   return (
     <div className="app-shell">
