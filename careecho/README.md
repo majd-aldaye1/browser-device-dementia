@@ -7,7 +7,6 @@ MemorAId is a privacy-first **assistive prototype** for caregivers of people wit
 ## MVP Features
 
 - Start/Stop listening controls (browser speech recognition).
-- Check Provider button to confirm whether OpenAI or mock extraction is active before listening.
 - Live transcript panel.
 - Automatic Q/A extraction from natural conversation.
 - Repeated question detection with similarity score.
@@ -63,8 +62,6 @@ This allows extraction and repeated-question matching without microphone access.
 - If OpenAI fails at runtime, the route also falls back to mock extraction.
 
 The OpenAI key is never sent to client-side code and should **not** be set as `NEXT_PUBLIC_OPENAI_API_KEY`.
-
-You can click **Check Provider** in the UI before listening to confirm the active provider.
 
 ## Deployment (Vercel)
 

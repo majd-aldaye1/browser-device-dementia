@@ -26,20 +26,6 @@ export default function HomePage() {
   const { voices, settings, setSettings, speak } = useComfortingTts();
   const transcriberRef = useRef<BrowserSpeechTranscriber | null>(null);
 
-  const checkProviderStatus = async () => {
-    setStatus("Checking provider configuration...");
-
-    try {
-      const response = await fetch("/api/provider-status", { method: "GET" });
-      const payload = (await response.json()) as { provider?: string };
-      const provider = payload.provider ?? "unknown";
-      setProviderLabel(provider);
-      setStatus(`Provider check complete: ${provider}`);
-    } catch {
-      setStatus("Provider check failed. Please retry.");
-    }
-  };
-
   const processTranscript = async (nextTranscript: TranscriptSegment[]) => {
     const chunk = buildTranscriptChunk(nextTranscript);
     if (!chunk.trim()) return;
@@ -160,7 +146,6 @@ export default function HomePage() {
       ) : null}
 
       <div className="actions">
-        <button onClick={checkProviderStatus} disabled={!consentAccepted}>Check Provider</button>
         <button onClick={startListening} disabled={isListening || !consentAccepted}>Start Listening</button>
         <button onClick={stopListening} disabled={!isListening}>Stop Listening</button>
         <button className="danger" onClick={resetMemory} disabled={!count}>Reset Memory</button>
