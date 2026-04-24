@@ -22,7 +22,7 @@ export class OpenAiQaExtractorProvider implements QaExtractorProvider {
           {
             role: "system",
             content:
-              "Extract only clear question + answer pairs from transcript lines. Speakers may be labeled patient/caregiver/unknown. Treat question-like phrasing (for example: where are we now) as a question even without a question mark. Ignore trailing timestamps like (7:19:16 PM). Return strict JSON using schema: { pairs: [{question,answer,confidence,sourceTranscript}] }. If a clear answer is missing, emit no pair. Never invent details.",
+              "Extract only clear patient question + caregiver answer pairs from transcript lines. Return strict JSON using schema: { pairs: [{question,answer,confidence,sourceTranscript}] }. If answer is missing, do not emit a pair. Never invent details.",
           },
           {
             role: "user",
