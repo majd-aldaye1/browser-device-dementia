@@ -4,7 +4,6 @@ import { useRef, useState } from "react";
 import { Panel } from "@/components/Panel";
 import { VoiceControls } from "@/components/VoiceControls";
 import { useQaMemory } from "@/lib/memory/useQaMemory";
-import { looksLikeQuestion } from "@/lib/nlp/questionHeuristics";
 import { findBestRepeatedQuestionMatch } from "@/lib/repetition/similarity";
 import { BrowserSpeechTranscriber } from "@/lib/transcription/browserSpeechRecognition";
 import { buildTranscriptChunk } from "@/lib/transcription/chunking";
@@ -26,20 +25,6 @@ export default function HomePage() {
   const { pairs, upsertPairs, deletePair, reset, count } = useQaMemory();
   const { voices, settings, setSettings, speak } = useComfortingTts();
   const transcriberRef = useRef<BrowserSpeechTranscriber | null>(null);
-
-  const checkProviderStatus = async () => {
-    setStatus("Checking provider configuration...");
-
-    try {
-      const response = await fetch("/api/provider-status", { method: "GET" });
-      const payload = (await response.json()) as { provider?: string };
-      const provider = payload.provider ?? "unknown";
-      setProviderLabel(provider);
-      setStatus(`Provider check complete: ${provider}`);
-    } catch {
-      setStatus("Provider check failed. Please retry.");
-    }
-  };
 
   const processTranscript = async (nextTranscript: TranscriptSegment[]) => {
     const chunk = buildTranscriptChunk(nextTranscript);
@@ -70,7 +55,7 @@ export default function HomePage() {
     }
 
     for (const segment of nextTranscript.slice(-2)) {
-      if (segment.speaker === "caregiver" || !looksLikeQuestion(segment.text)) continue;
+      if (segment.speaker !== "patient" || !segment.text.includes("?")) continue;
 
       const match = findBestRepeatedQuestionMatch(segment.text, pairs);
       setDetection(match);
@@ -161,7 +146,6 @@ export default function HomePage() {
       ) : null}
 
       <div className="actions">
-        <button onClick={checkProviderStatus} disabled={!consentAccepted}>Check Provider</button>
         <button onClick={startListening} disabled={isListening || !consentAccepted}>Start Listening</button>
         <button onClick={stopListening} disabled={!isListening}>Stop Listening</button>
         <button className="danger" onClick={resetMemory} disabled={!count}>Reset Memory</button>

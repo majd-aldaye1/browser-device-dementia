@@ -7,7 +7,9 @@ export const buildTranscriptChunk = (
   const windowed = segments.slice(-maxSegments);
   return windowed
     .map((segment) => {
-      return `${segment.speaker}: ${segment.text}`;
+      const speakerLabel =
+        segment.speaker === "unknown" ? "speaker" : segment.speaker;
+      return `${speakerLabel}: ${segment.text}`;
     })
     .join("\n");
 };

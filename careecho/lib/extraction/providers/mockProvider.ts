@@ -1,24 +1,7 @@
-import { looksLikeQuestion } from "@/lib/nlp/questionHeuristics";
 import { QaExtractorProvider } from "@/lib/extraction/providers/types";
 import { ExtractionResult } from "@/types/memoraid";
 
-type ParsedLine = {
-  speaker: "patient" | "caregiver" | "unknown";
-  text: string;
-  raw: string;
-};
-
-const parseLine = (line: string): ParsedLine | null => {
-  const match = line.match(/^(patient|caregiver|unknown|speaker):\s*(.*)$/i);
-  if (!match) return null;
-
-  const speaker = match[1].toLowerCase() as ParsedLine["speaker"];
-  const normalizedSpeaker = speaker === "speaker" ? "unknown" : speaker;
-  const text = match[2].trim();
-  if (!text) return null;
-
-  return { speaker: normalizedSpeaker, text, raw: `${normalizedSpeaker}: ${text}` };
-};
+const questionPattern = /\?$/;
 
 export class MockQaExtractorProvider implements QaExtractorProvider {
   name = "mock-rule-based";
@@ -27,30 +10,27 @@ export class MockQaExtractorProvider implements QaExtractorProvider {
     const lines = transcriptChunk
       .split("\n")
       .map((line) => line.trim())
-      .filter(Boolean)
-      .map(parseLine)
-      .filter((line): line is ParsedLine => Boolean(line));
+      .filter(Boolean);
 
     const pairs: ExtractionResult["pairs"] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
       const current = lines[i];
       const next = lines[i + 1];
-      if (!current || !next) continue;
 
-      if (!looksLikeQuestion(current.text)) continue;
-      if (looksLikeQuestion(next.text)) continue;
+      if (!current?.startsWith("patient:")) continue;
+      if (!questionPattern.test(current)) continue;
+      if (!next?.startsWith("caregiver:")) continue;
 
-      if (current.speaker === "caregiver" && next.speaker === "patient") continue;
-
-      const confidence =
-        current.speaker === "patient" && next.speaker === "caregiver" ? 0.65 : 0.5;
+      const question = current.replace(/^patient:\s*/i, "").trim();
+      const answer = next.replace(/^caregiver:\s*/i, "").trim();
+      if (!question || !answer) continue;
 
       pairs.push({
-        question: current.text,
-        answer: next.text,
-        confidence,
-        sourceTranscript: `${current.raw}\n${next.raw}`,
+        question,
+        answer,
+        confidence: 0.55,
+        sourceTranscript: `${current}\n${next}`,
       });
     }
 
