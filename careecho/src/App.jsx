@@ -166,7 +166,6 @@ export default function App() {
     } else {
       pushEvent("heard", `Ignored non-question utterance: “${text}”`);
     }
-  }
 
     const match = findQuestionMatch(text, memoryRef.current);
     if (match) {
