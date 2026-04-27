@@ -15,17 +15,6 @@ export async function POST(request: NextRequest) {
 
     try {
       const result = await provider.extract(transcriptChunk);
-
-      if (provider.name !== "mock-rule-based" && (!result.pairs || result.pairs.length === 0)) {
-        const fallback = new MockQaExtractorProvider();
-        const fallbackResult = await fallback.extract(transcriptChunk);
-        return NextResponse.json({
-          ...fallbackResult,
-          provider: `${provider.name} -> ${fallback.name}`,
-          warning: "Primary provider returned no clear pairs. Mock fallback attempted.",
-        });
-      }
-
       return NextResponse.json({ ...result, provider: provider.name });
     } catch (providerError) {
       if (provider.name !== "mock-rule-based") {
